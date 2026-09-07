@@ -1,0 +1,6 @@
+Analysis,Value
+Total False Negatives,272
+False Negatives with score 6,80
+False Negatives with score 5,89
+False Negatives with score 4,67
+False Negatives with score below 4,36

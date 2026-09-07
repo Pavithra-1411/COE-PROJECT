@@ -1,0 +1,11 @@
+Metric,Value
+Total Referrals,1000.0
+True Positives,88.0
+True Negatives,639.0
+False Positives,1.0
+False Negatives,272.0
+Precision,0.9887640449438202
+Recall,0.24444444444444444
+Accuracy,0.727
+Baseline Urgent Cases,87.0
+Proposed Urgent Cases,89.0
