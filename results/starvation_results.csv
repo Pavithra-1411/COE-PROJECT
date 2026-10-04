@@ -1,0 +1,10 @@
+metric,value
+Total routine cases,481.0
+Routine cases waiting > 24 hours,95.0
+Routine cases waiting > 48 hours,19.0
+Routine cases waiting > 72 hours,6.0
+Average routine waiting time (hours),15.84
+Maximum routine waiting time (hours),120.0
+Cases receiving waiting-time aging,292.0
+Cases receiving +1 aging bonus,205.0
+Cases receiving +2 aging bonus,87.0

@@ -93,21 +93,32 @@ df.loc[
 ] += 1
 
 
+
 # ==========================================================
-# RULE 5 - WAITING TIME
+# RULE 5 - WAITING-TIME AGING / STARVATION PREVENTION
+# ==========================================================
+# Waiting-time aging prevents routine cases from being
+# indefinitely delayed when new urgent referrals arrive.
+#
+# The aging bonus is capped so waiting time cannot
+# overpower genuine clinical urgency.
 # ==========================================================
 
-df.loc[
-    df["waiting_hours"] > 48,
-    "priority_score_v2"
-] += 2
+df["waiting_age_bonus"] = 0
 
 df.loc[
     (df["waiting_hours"] > 24) &
     (df["waiting_hours"] <= 48),
-    "priority_score_v2"
-] += 1
+    "waiting_age_bonus"
+] = 1
 
+df.loc[
+    (df["waiting_hours"] > 48),
+    "waiting_age_bonus"
+] = 2
+
+# Add waiting-time aging to the clinical priority score
+df["priority_score_v2"] += df["waiting_age_bonus"]
 
 # ==========================================================
 # VERSION 2 SAFETY OVERRIDE RULES
