@@ -1,10 +1,18 @@
-import streamlit as st
+
+from pathlib import Path
+import os
 import pandas as pd
+import streamlit as st
 
+# Import existing override functions
+from override_manager import apply_overrides, save_override
 
-# ==========================================================
-# PAGE CONFIGURATION
-# ==========================================================
+# Import workflow functions
+from workflow_manager import (
+    apply_workflow_statuses,
+    update_workflow_status,
+    load_workflow_history
+)
 
 st.set_page_config(
     page_title="CardioGuard",
@@ -12,317 +20,208 @@ st.set_page_config(
     layout="wide"
 )
 
+ROOT = Path(__file__).resolve().parent.parent
 
-# ==========================================================
-# CUSTOM CSS
-# ==========================================================
+DATA_FILE = ROOT / "data" / "processed" / "prioritized_referrals_v2.csv"
+AUDIT_FILE = ROOT / "results" / "clinician_override_audit.csv"
 
-st.markdown("""
-<style>
-
-.main {
-    padding-top: 1rem;
+PRIORITIES = ["Urgent", "Priority", "Routine"]
+PRIORITY_ORDER = {
+    name: i for i, name in enumerate(PRIORITIES)
 }
 
-.block-container {
-    padding-top: 1.5rem;
-    padding-bottom: 2rem;
-}
+WORKFLOW_STATUSES = [
+    "New",
+    "Waiting",
+    "Under_Review",
+    "Completed",
+    "Cancelled"
+]
 
-.hero {
-    padding: 25px;
-    border-radius: 18px;
-    background: linear-gradient(
-        135deg,
-        #151922,
-        #242936
-    );
-    border: 1px solid #3b4252;
-    margin-bottom: 25px;
-}
-
-.hero-title {
-    font-size: 38px;
-    font-weight: 800;
-    margin-bottom: 5px;
-}
-
-.hero-subtitle {
-    font-size: 17px;
-    color: #b9c0cc;
-}
-
-.status {
-    display: inline-block;
-    padding: 7px 14px;
-    border-radius: 20px;
-    background: #173d2c;
-    color: #6ee7a0;
-    font-weight: 700;
-    font-size: 13px;
-}
-
-.priority-card {
-    padding: 18px;
-    border-radius: 15px;
-    background: #1b1f28;
-    border: 1px solid #343a46;
-    min-height: 125px;
-}
-
-.priority-title {
-    font-size: 15px;
-    color: #aeb5c2;
-}
-
-.priority-number {
-    font-size: 32px;
-    font-weight: 800;
-    margin-top: 8px;
-}
-
-.priority-description {
-    font-size: 13px;
-    color: #8f97a6;
-}
-
-.section-title {
-    font-size: 25px;
-    font-weight: 750;
-    margin-top: 20px;
-    margin-bottom: 12px;
-}
-
-.case-card {
-    padding: 18px;
-    border-radius: 14px;
-    background: #1b1f28;
-    border: 1px solid #343a46;
-    margin-bottom: 10px;
-}
-
-.case-id {
-    font-size: 20px;
-    font-weight: 750;
-}
-
-.case-info {
-    color: #aeb5c2;
-    font-size: 14px;
-}
-
-.explanation {
-    padding: 18px;
-    border-radius: 15px;
-    background: #191e27;
-    border: 1px solid #394150;
-}
-
-.explanation-title {
-    font-size: 20px;
-    font-weight: 750;
-    margin-bottom: 12px;
-}
-
-.score-box {
-    padding: 15px;
-    border-radius: 12px;
-    background: #222733;
-    text-align: center;
-}
-
-.score-number {
-    font-size: 30px;
-    font-weight: 800;
-}
-
-.small-label {
-    color: #9da5b3;
-    font-size: 13px;
-}
-
-div[data-testid="stMetric"] {
-    background-color: #1b1f28;
-    border: 1px solid #343a46;
-    padding: 15px;
-    border-radius: 14px;
-}
-
-</style>
-""", unsafe_allow_html=True)
-
-
-# ==========================================================
-# LOAD DATA
-# ==========================================================
-
-DATA_FILE = "data/processed/prioritized_referrals_v2.csv"
-
-df = pd.read_csv(DATA_FILE)
+# Ensure project-relative paths work
+os.chdir(ROOT)
 
 
 # ==========================================================
 # HELPER FUNCTIONS
 # ==========================================================
 
-def get_value(row, column, default="Not available"):
-    if column in row.index:
-        value = row[column]
+def safe_value(row, name, default="Not available"):
+    if name not in row.index:
+        return default
 
-        if pd.isna(value):
-            return default
+    value = row[name]
 
-        return value
-
-    return default
+    return default if pd.isna(value) else value
 
 
-def priority_icon(priority):
-    if priority == "Urgent":
-        return "🔴"
+def read_history(referral_id):
 
-    if priority == "Priority":
-        return "🟠"
+    if not AUDIT_FILE.is_file() or AUDIT_FILE.stat().st_size == 0:
+        return pd.DataFrame()
 
-    return "🟢"
+    try:
+        history = pd.read_csv(AUDIT_FILE, dtype=str)
 
+    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError):
+        return pd.DataFrame()
 
-# ==========================================================
-# HEADER
-# ==========================================================
+    if "referral_id" not in history.columns:
+        return pd.DataFrame()
 
-st.markdown("""
-<div class="hero">
-
-<div style="display:flex; justify-content:space-between;
-align-items:center;">
-
-<div>
-
-<div class="hero-title">
-❤️ CardioGuard
-</div>
-
-<div class="hero-subtitle">
-Explainable Cardiology Diagnostic Worklist
-</div>
-
-</div>
-
-<div class="status">
-● SYSTEM ONLINE
-</div>
-
-</div>
-
-</div>
-""", unsafe_allow_html=True)
+    return history.loc[
+        history["referral_id"] == str(referral_id)
+    ].iloc[::-1].reset_index(drop=True)
 
 
 # ==========================================================
-# SIDEBAR
+# LOAD DATASET
 # ==========================================================
 
-st.sidebar.title("⚙ Worklist Controls")
+if not DATA_FILE.is_file():
+    st.error(f"Dataset not found: {DATA_FILE}")
+    st.stop()
 
-st.sidebar.subheader("User Role")
+try:
 
-role = st.sidebar.selectbox(
-    "Select role",
-    [
-        "Technician",
-        "Cardiologist"
+    referrals = pd.read_csv(DATA_FILE)
+
+    required = [
+        "referral_id",
+        "system_priority_label_v2",
+        "waiting_hours",
+        "study_status"
     ]
+
+    missing = [
+        name for name in required
+        if name not in referrals.columns
+    ]
+
+    if missing:
+        st.error(
+            "Missing required dataset columns: "
+            + ", ".join(missing)
+        )
+        st.stop()
+
+    referrals["referral_id"] = (
+        referrals["referral_id"].astype(str)
+    )
+
+    # Apply saved clinician priority overrides
+    referrals = apply_overrides(referrals)
+
+    # Apply saved workflow status updates
+    referrals = apply_workflow_statuses(referrals)
+
+except (OSError, ValueError, KeyError) as error:
+
+    st.error(f"Unable to load referrals: {error}")
+    st.stop()
+
+
+# ==========================================================
+# DASHBOARD HEADER
+# ==========================================================
+
+st.title("❤️ CardioGuard")
+
+st.write(
+    "Explainable Cardiology Diagnostic Worklist"
 )
 
-
-st.sidebar.subheader("Priority Filter")
-
-priority_filter = st.sidebar.selectbox(
-    "Show priority",
-    [
-        "All",
-        "Urgent",
-        "Priority",
-        "Routine"
-    ]
-)
+st.success("● PROTOTYPE ONLINE")
 
 
 # ==========================================================
-# FILTER DATA
+# SIDEBAR CONTROLS
+# ==========================================================
+
+with st.sidebar:
+
+    st.header("⚙️ Worklist Controls")
+
+    role = st.selectbox(
+        "Select role",
+        ["Technician", "Cardiologist"]
+    )
+
+    priority_filter = st.selectbox(
+        "Show priority",
+        ["All"] + PRIORITIES
+    )
+
+    st.caption(
+        "Role selection is for demonstration only; "
+        "it is not authentication."
+    )
+
+
+# ==========================================================
+# FILTER REFERRALS
 # ==========================================================
 
 if priority_filter == "All":
 
-    display_df = df.copy()
+    display_df = referrals.copy()
 
 else:
 
-    display_df = df[
-        df["system_priority_label_v2"] == priority_filter
+    display_df = referrals.loc[
+        referrals["effective_priority"] == priority_filter
     ].copy()
 
 
 # ==========================================================
-# TOP SUMMARY
+# WORKLIST OVERVIEW
 # ==========================================================
 
-st.markdown(
-    '<div class="section-title">📊 Worklist Overview</div>',
-    unsafe_allow_html=True
+st.header("📊 Worklist Overview")
+
+metrics = st.columns(4)
+
+metrics[0].metric(
+    "Total Referrals",
+    len(display_df)
 )
 
-col1, col2, col3, col4 = st.columns(4)
+for column, priority, icon in zip(
+    metrics[1:],
+    PRIORITIES,
+    ["🔴", "🟠", "🟢"]
+):
 
-
-with col1:
-
-    st.metric(
-        "Total Referrals",
-        len(display_df)
+    column.metric(
+        f"{icon} {priority}",
+        int(
+            (
+                display_df["effective_priority"] == priority
+            ).sum()
+        )
     )
 
 
-with col2:
+# ==========================================================
+# WORKFLOW STATUS OVERVIEW
+# ==========================================================
 
-    urgent_count = len(
-        display_df[
-            display_df["system_priority_label_v2"] == "Urgent"
-        ]
+st.header("🔄 Referral Workflow Overview")
+
+status_columns = st.columns(5)
+
+for column, status in zip(
+    status_columns,
+    WORKFLOW_STATUSES
+):
+
+    count = int(
+        (display_df["study_status"] == status).sum()
     )
 
-    st.metric(
-        "🔴 Urgent",
-        urgent_count
-    )
-
-
-with col3:
-
-    priority_count = len(
-        display_df[
-            display_df["system_priority_label_v2"] == "Priority"
-        ]
-    )
-
-    st.metric(
-        "🟠 Priority",
-        priority_count
-    )
-
-
-with col4:
-
-    routine_count = len(
-        display_df[
-            display_df["system_priority_label_v2"] == "Routine"
-        ]
-    )
-
-    st.metric(
-        "🟢 Routine",
-        routine_count
+    column.metric(
+        status.replace("_", " "),
+        count
     )
 
 
@@ -330,493 +229,221 @@ with col4:
 # STARVATION PROTECTION
 # ==========================================================
 
-aging_count = 0
+st.header("⏱️ Starvation Protection")
 
 if "waiting_age_bonus" in display_df.columns:
 
-    aging_count = len(
-        display_df[
-            display_df["waiting_age_bonus"] > 0
-        ]
+    aging = pd.to_numeric(
+        display_df["waiting_age_bonus"],
+        errors="coerce"
+    ).fillna(0)
+
+else:
+
+    aging = pd.Series(
+        0,
+        index=display_df.index
     )
 
+aging_cols = st.columns(3)
 
-st.markdown(
-    '<div class="section-title">⏱ Starvation Protection</div>',
-    unsafe_allow_html=True
+aging_cols[0].metric(
+    "Cases Receiving Aging",
+    int((aging > 0).sum())
 )
 
-aging_col1, aging_col2, aging_col3 = st.columns(3)
+aging_cols[1].metric(
+    "+1 Aging Bonus",
+    int((aging == 1).sum())
+)
 
+aging_cols[2].metric(
+    "+2 Aging Bonus",
+    int((aging == 2).sum())
+)
 
-with aging_col1:
-
-    st.metric(
-        "Cases Receiving Aging",
-        aging_count
-    )
-
-
-with aging_col2:
-
-    if "waiting_age_bonus" in display_df.columns:
-
-        plus_one = len(
-            display_df[
-                display_df["waiting_age_bonus"] == 1
-            ]
-        )
-
-    else:
-
-        plus_one = 0
-
-    st.metric(
-        "+1 Aging Bonus",
-        plus_one
-    )
-
-
-with aging_col3:
-
-    if "waiting_age_bonus" in display_df.columns:
-
-        plus_two = len(
-            display_df[
-                display_df["waiting_age_bonus"] == 2
-            ]
-        )
-
-    else:
-
-        plus_two = 0
-
-    st.metric(
-        "+2 Aging Bonus",
-        plus_two
-    )
+st.caption(
+    "Waiting-time bonuses are capped to preserve clinical urgency."
+)
 
 
 # ==========================================================
-# ROLE INDICATOR
+# ROLE INFORMATION
 # ==========================================================
-
-st.markdown("---")
 
 if role == "Technician":
 
     st.info(
-        "🔧 Technician View: Operational information is displayed."
+        "🔧 Technician view: operational referral information."
     )
 
 else:
 
     st.info(
-        "🩺 Cardiologist View: Clinical evidence and "
-        "prioritization information are displayed."
+        "🩺 Cardiologist view: clinical evidence, "
+        "priority overrides, and audit history."
     )
 
 
 # ==========================================================
-# WORKLIST
+# REFERRAL STATUS MANAGEMENT
 # ==========================================================
 
-st.markdown(
-    '<div class="section-title">📋 Diagnostic Worklist</div>',
-    unsafe_allow_html=True
+st.header("🔄 Referral Status Management")
+
+if display_df.empty:
+
+    st.warning(
+        "No referrals are available for the selected priority."
+    )
+
+else:
+
+    referral_ids = display_df[
+        "referral_id"
+    ].astype(str).tolist()
+
+    with st.form("workflow_update_form"):
+
+        selected_referral = st.selectbox(
+            "Select Referral ID",
+            referral_ids
+        )
+
+        selected_row = display_df.loc[
+            display_df["referral_id"] == selected_referral
+        ].iloc[0]
+
+        current_status = str(
+            selected_row["study_status"]
+        )
+
+        st.write(
+            f"**Current Status:** {current_status.replace('_', ' ')}"
+        )
+
+        new_status = st.selectbox(
+            "Update Status",
+            WORKFLOW_STATUSES
+        )
+
+        updated_by = st.text_input(
+            "User ID",
+            placeholder="Enter your user ID"
+        )
+
+        reason = st.text_area(
+            "Reason for Status Update",
+            placeholder="Enter the reason for this update"
+        )
+
+        submit_status = st.form_submit_button(
+            "Save Status Update"
+        )
+
+    if submit_status:
+
+        try:
+
+            update_workflow_status(
+                referral_id=selected_referral,
+                old_status=current_status,
+                new_status=new_status,
+                updated_by=updated_by,
+                reason=reason
+            )
+
+            st.success(
+                f"Status updated successfully for {selected_referral}."
+            )
+
+            st.rerun()
+
+        except ValueError as error:
+
+            st.error(str(error))
+
+        except OSError as error:
+
+            st.error(
+                f"Unable to save status update: {error}"
+            )
+
+
+# ==========================================================
+# WORKFLOW HISTORY
+# ==========================================================
+
+st.subheader("📜 Referral Workflow History")
+
+try:
+
+    workflow_history = load_workflow_history()
+
+    if not workflow_history.empty:
+
+        if not display_df.empty:
+
+            history_referral = st.selectbox(
+                "Choose Referral to View History",
+                display_df["referral_id"].astype(str).tolist(),
+                key="workflow_history_referral"
+            )
+
+            referral_history = workflow_history.loc[
+                workflow_history["referral_id"] == history_referral
+            ].iloc[::-1].reset_index(drop=True)
+
+            if referral_history.empty:
+
+                st.info(
+                    "No workflow history found for this referral."
+                )
+
+            else:
+
+                st.dataframe(
+                    referral_history,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+    else:
+
+        st.info(
+            "No workflow status updates have been recorded yet."
+        )
+
+except (OSError, ValueError, KeyError) as error:
+
+    st.error(
+        f"Unable to display workflow history: {error}"
+    )
+
+
+# ==========================================================
+# DIAGNOSTIC WORKLIST
+# ==========================================================
+
+st.header("📋 Diagnostic Worklist")
+
+display_df["_priority_order"] = (
+    display_df["effective_priority"]
+    .map(PRIORITY_ORDER)
+    .fillna(3)
 )
 
-
-# Sort urgent cases first
-
-priority_order = {
-    "Urgent": 0,
-    "Priority": 1,
-    "Routine": 2
-}
-
-display_df["priority_order"] = display_df[
-    "system_priority_label_v2"
-].map(priority_order)
-
 display_df = display_df.sort_values(
-    by=["priority_order", "waiting_hours"],
+    by=["_priority_order", "waiting_hours"],
     ascending=[True, False]
 )
 
-
-# Show maximum 20 cases
-
-worklist_df = display_df.head(20)
-
-
-# ==========================================================
-# WORKLIST DISPLAY
-# ==========================================================
-
-for index, row in worklist_df.iterrows():
-
-    referral_id = get_value(
-        row,
-        "referral_id"
-    )
-
-    priority = get_value(
-        row,
-        "system_priority_label_v2"
-    )
-
-    vendor = get_value(
-        row,
-        "vendor"
-    )
-
-    device = get_value(
-        row,
-        "device_id"
-    )
-
-    modality = get_value(
-        row,
-        "modality"
-    )
-
-    waiting = get_value(
-        row,
-        "waiting_hours"
-    )
-
-    score = get_value(
-        row,
-        "priority_score_v2"
-    )
-
-    icon = priority_icon(priority)
-
-
-    col1, col2, col3 = st.columns(
-        [4, 2, 2]
-    )
-
-
-    with col1:
-
-        st.markdown(
-            f"""
-            <div class="case-card">
-
-            <div class="case-id">
-            {icon} {referral_id}
-            </div>
-
-            <div class="case-info">
-            {modality} &nbsp;•&nbsp;
-            {vendor} &nbsp;•&nbsp;
-            {device}
-            </div>
-
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-
-    with col2:
-
-        st.metric(
-            "Priority",
-            priority
-        )
-
-
-    with col3:
-
-        st.metric(
-            "Waiting",
-            f"{waiting} h"
-        )
-
-
-# ==========================================================
-# SELECT REFERRAL
-# ==========================================================
-
-st.markdown(
-    '<div class="section-title">🔎 Review Referral</div>',
-    unsafe_allow_html=True
+display_df = display_df.drop(
+    columns=["_priority_order"]
 )
 
-
-if len(worklist_df) > 0:
-
-    selected_referral = st.selectbox(
-        "Select a referral for details",
-        worklist_df["referral_id"].tolist()
-    )
-
-
-    selected_row = worklist_df[
-        worklist_df["referral_id"] == selected_referral
-    ].iloc[0]
-
-
-    # ======================================================
-    # REFERRAL HEADER
-    # ======================================================
-
-    selected_priority = get_value(
-        selected_row,
-        "system_priority_label_v2"
-    )
-
-    selected_score = get_value(
-        selected_row,
-        "priority_score_v2"
-    )
-
-    selected_waiting = get_value(
-        selected_row,
-        "waiting_hours"
-    )
-
-    selected_bonus = get_value(
-        selected_row,
-        "waiting_age_bonus",
-        0
-    )
-
-
-    st.markdown(
-        f"""
-        <div class="explanation">
-
-        <div class="explanation-title">
-        {priority_icon(selected_priority)}
-        {selected_referral}
-        — {selected_priority}
-        </div>
-
-        <div class="case-info">
-        Selected referral for detailed review
-        </div>
-
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-    # ======================================================
-    # TWO COLUMN DETAILS
-    # ======================================================
-
-    left_col, right_col = st.columns(2)
-
-
-    # ======================================================
-    # EVIDENCE
-    # ======================================================
-
-    with left_col:
-
-        st.subheader("🧠 Decision Evidence")
-
-        reason = get_value(
-            selected_row,
-            "priority_reason",
-            "No explanation available"
-        )
-
-        st.markdown(
-            f"""
-            <div class="explanation">
-
-            <div class="explanation-title">
-            Why was this case prioritized?
-            </div>
-
-            <p>✓ {reason}</p>
-
-            <p>
-            ✓ Waiting time: {selected_waiting} hours
-            </p>
-
-            <p>
-            ✓ Priority score: {selected_score}
-            </p>
-
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-
-    # ======================================================
-    # SCORE BREAKDOWN
-    # ======================================================
-
-    with right_col:
-
-        st.subheader("📈 Priority Breakdown")
-
-        score_col1, score_col2, score_col3 = st.columns(3)
-
-
-        with score_col1:
-
-            st.markdown(
-                f"""
-                <div class="score-box">
-
-                <div class="small-label">
-                Clinical Score
-                </div>
-
-                <div class="score-number">
-                {float(selected_score) - float(selected_bonus):.0f}
-                </div>
-
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-
-        with score_col2:
-
-            st.markdown(
-                f"""
-                <div class="score-box">
-
-                <div class="small-label">
-                Aging Bonus
-                </div>
-
-                <div class="score-number">
-                +{selected_bonus}
-                </div>
-
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-
-        with score_col3:
-
-            st.markdown(
-                f"""
-                <div class="score-box">
-
-                <div class="small-label">
-                Final Score
-                </div>
-
-                <div class="score-number">
-                {selected_score}
-                </div>
-
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-
-# ==========================================================
-# CARDIOLOGIST DETAILS
-# ==========================================================
-
-if role == "Cardiologist":
-
-    st.markdown("---")
-
-    st.markdown(
-        '<div class="section-title">🩺 Clinical Review</div>',
-        unsafe_allow_html=True
-    )
-
-
-    clinical_col1, clinical_col2 = st.columns(2)
-
-
-    with clinical_col1:
-
-        st.subheader("Clinical Indicators")
-
-        clinical_fields = [
-            ("Heart Rate", "heart_rate_bpm", "bpm"),
-            ("Systolic BP", "systolic_bp", "mmHg"),
-            ("Oxygen Saturation", "oxygen_saturation", "%"),
-            ("Chest Pain", "chest_pain", ""),
-            ("Shortness of Breath", "shortness_of_breath", ""),
-            ("Syncope", "syncope_flag", ""),
-            ("Abnormal Finding", "abnormal_finding", ""),
-            ("Critical Finding", "critical_finding", "")
-        ]
-
-        for label, column, unit in clinical_fields:
-
-            if column in selected_row.index:
-
-                value = get_value(
-                    selected_row,
-                    column
-                )
-
-                st.write(
-                    f"**{label}:** {value} {unit}"
-                )
-
-
-    with clinical_col2:
-
-        st.subheader("Privacy & Clinician Control")
-
-        consent = get_value(
-            selected_row,
-            "consent_status"
-        )
-
-        sensitivity = get_value(
-            selected_row,
-            "data_sensitivity"
-        )
-
-        visibility = get_value(
-            selected_row,
-            "role_visibility"
-        )
-
-        override = get_value(
-            selected_row,
-            "clinician_override"
-        )
-
-
-        st.write(
-            f"**Consent Status:** {consent}"
-        )
-
-        st.write(
-            f"**Data Sensitivity:** {sensitivity}"
-        )
-
-        st.write(
-            f"**Role Visibility:** {visibility}"
-        )
-
-        st.write(
-            f"**Clinician Override:** {override}"
-        )
-
-
-# ==========================================================
-# FOOTER
-# ==========================================================
-
-st.markdown("---")
-
-st.caption(
-    "CardioGuard | Explainable diagnostic-worklist prototype | "
-    "Synthetic data only | Clinician remains responsible for final decisions"
+st.dataframe(
+    display_df,
+    use_container_width=True,
+    hide_index=True
 )
